@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+faiss-cpu
+watchdog
+trafilatura
+pymupdf
+python-docx
+python-pptx
+openpyxl
+sentence-transformers
+pydantic
+requests
+fitz
+numpy
+icalendar
