@@ -7,22 +7,32 @@ function App() {
   const [answer, setAnswer] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const askJarvis = async () => {
-    if (!question.trim()) return;
-    setLoading(true);
-    try {
-      const res = await axios.post("http://127.0.0.1:8000/ask", {
-        question,
-        top_k: 5,
-      });
-      setAnswer(res.data.answer || "No answer");
-    } catch (err) {
-      setAnswer("Error: " + err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
 
+const askJarvis = async () => {
+  if (!question.trim()) return;
+  setLoading(true);
+  try {
+    const q = question.trim();
+    if (q.toLowerCase().startsWith("look at my screen")) {
+      // everything after the phrase becomes the goal (optional)
+      const goal = q.slice("look at my screen".length).trim() ||
+                   "Critique the design and code on screen; propose concrete fixes.";
+      const res = await axios.post("http://127.0.0.1:8000/screen_review", {
+        goal,
+        top_k: 12,
+        target_words: 220,
+      });
+      setAnswer(res.data.answer || "No advice yet.");
+    } else {
+      const res = await axios.post("http://127.0.0.1:8000/ask", { question: q, top_k: 5 });
+      setAnswer(res.data.answer || "No answer");
+    }
+  } catch (err) {
+    setAnswer("Error: " + err.message);
+  } finally {
+    setLoading(false);
+  }
+};
   const ingestDocs = async () => {
     setLoading(true);
     try {

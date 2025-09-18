@@ -16,9 +16,17 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from pydantic import BaseModel
 import trafilatura
+import io, base64
+from PIL import Image
+import mss
+import pytesseract
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+
+
 
 # =========================
-# Settings
+# Settings - Pre-sets
 # =========================
 LOCAL_TZ = ZoneInfo("Europe/Amsterdam")
 APP_TITLE = "J.A.R.V.I.S BackEnd"
@@ -27,7 +35,8 @@ INDEX_DIR = "./index"
 META_PATH = os.path.join(INDEX_DIR, "meta.json")
 INDEX_PATH = os.path.join(INDEX_DIR, "faiss.index")
 
-# Models via local Ollama
+
+# Models from Ollama
 EMBED_MODEL = "nomic-embed-text"
 LLM_MODEL   = "llama3.1:8b"
 OLLAMA      = "http://localhost:11434"
@@ -47,9 +56,11 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"ok": True}
+# Checking for Pulse
+
 
 # =========================
-# File parsing & chunking
+# File parsing & chunking Functions
 # =========================
 def read_text_from_file(path: str) -> str:
     ext = os.path.splitext(path)[1].lower()
@@ -74,7 +85,7 @@ def chunk_text(t: str, max_chars: int = 1200, overlap: int = 200) -> List[str]:
     return chunks
 
 # =========================
-# Embeddings & LLM (Ollama)
+# Embeddings & LLM
 # =========================
 def embed_one(text: str) -> np.ndarray:
     r = requests.post(f"{OLLAMA}/api/embeddings",
@@ -124,7 +135,7 @@ def load_index():
     return faiss.read_index(INDEX_PATH)
 
 # =========================
-# /ingest  (parse → chunk → embed → index)
+# /ingest  (parse → chunk → embed → index -< callouts )
 # =========================
 class IngestRequest(BaseModel):
     folder: str = "./Docs"
@@ -178,7 +189,7 @@ def parse_ics_file(path: str, window_start: datetime, window_end: datetime):
             continue
     return out
 
-@app.post("/ingest")
+@app.post("/ingest")     # API Call on ingest function
 def ingest(req: IngestRequest):
     ensure_store()
 
@@ -215,7 +226,7 @@ def ingest(req: IngestRequest):
 class IngestURLRequest(BaseModel):
     url: str
 
-@app.post("/ingest_url")
+@app.post("/ingest_url")     # API call on ingest webpages function
 def ingest_url(req: IngestURLRequest):
     ensure_store()
 
@@ -262,7 +273,7 @@ class IngestICSRequest(BaseModel):
     include_past_days: int = 7       # include recent past
     max_events: int = 1000           # safety cap
 
-@app.post("/ingest_ics")
+@app.post("/ingest_ics")     # API call to ingest calendar ( .ics ) files
 def ingest_ics(req: IngestICSRequest):
     ensure_store()
 
@@ -339,9 +350,66 @@ def search_similar(query: str, top_k: int = 5):
                 "text": c["text"],
             })
     return out
+# =========================
+# Screen Review Support
+# =========================
+
+# HELPERS:
+def grab_screenshot() -> Image.Image:
+    with mss.mss() as sct:
+        mon = sct.monitors[1]  # primary monitor
+        raw = sct.grab(mon)
+        return Image.frombytes("RGB", raw.size, raw.rgb)
+
+def ocr_text(img: Image.Image) -> str:
+    # light pre-processing improves OCR
+    gray = img.convert("L")
+    return pytesseract.image_to_string(gray)
+
+
+# ENDPOINT - API CALL
+class ScreenReviewRequest(BaseModel):
+    goal: str = "Critique the design and code on screen; propose concrete fixes."
+    top_k: int = 12
+    target_words: int = 220
+
+SCREEN_OCR_PROMPT = """You are JARVIS — an Experience Designer teammate.
+SCREEN (OCR):
+{ocr}
+
+CONTEXT (design system, a11y, component APIs, style guides, heuristics):
+{context}
+
+Advise concretely:
+1) Issues / risks (usability, clarity, a11y, code smells if visible)
+2) Specific changes (labels, hierarchy, spacing, component choices, error handling, code snippets)
+3) A 3-step plan to fix it now
+Keep ≤{target_words} words. Cite with [source] where relevant.
+"""
+
+@app.post("/screen_review")
+def screen_review(req: ScreenReviewRequest):
+    img = grab_screenshot()
+    text = ocr_text(img)
+
+    # retrieve against OCR text + your goal
+    query = (req.goal or "") + " " + text[:2000]
+    hits = search_similar(query, top_k=max(5, min(50, req.top_k))) or []
+    ctx = "\n\n".join(f"[{os.path.basename(h['path'])}]\n{h['text']}" for h in hits)
+
+    prompt = SCREEN_OCR_PROMPT.format(ocr=text[:5000], context=ctx, target_words=req.target_words)
+    answer = llm_complete(prompt, temperature=0.3)
+    sources = list({h["path"] for h in hits})
+    return {"answer": answer, "sources": sources, "ocr_preview": text[:400]}
+
+
+
+
+
+
 
 # =========================
-# /ask  (Q&A with citations)
+# /ask   # Needed only on backend page / Is called when press "Ask" on react page
 # =========================
 class AskRequest(BaseModel):
     question: str
@@ -372,7 +440,7 @@ CONTEXT:
     return {"answer": answer, "sources": sources}
 
 # =========================
-# /synthesize  (short global/topic brief)
+# /synthesize  (Summarisation of a document)
 # =========================
 class SynthesizeRequest(BaseModel):
     query: Optional[str] = None   # topic; if None → global sample
